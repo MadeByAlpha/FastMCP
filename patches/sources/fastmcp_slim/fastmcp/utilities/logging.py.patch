@@ -1,0 +1,120 @@
+diff --git a/fastmcp_slim/fastmcp/utilities/logging.py b/fastmcp_slim/fastmcp/utilities/logging.py
+index eebf4eda..4efc7f17 100644
+--- a/fastmcp_slim/fastmcp/utilities/logging.py
++++ b/fastmcp_slim/fastmcp/utilities/logging.py
+@@ -4,14 +4,14 @@ import contextlib
+ import importlib.util
+ import logging
+ from pathlib import Path
+-from typing import Any, Literal, cast
+-
+-from rich.console import Console
+-from rich.logging import RichHandler
+-from typing_extensions import override
++from typing import Any, Literal, cast, override
+ 
+ import fastmcp
+ 
++if __debug__:
++    from rich.console import Console
++    from rich.logging import RichHandler
++
+ 
+ def _get_package_path(package: str) -> str | None:
+     """Return a package directory without importing the package."""
+@@ -74,53 +74,52 @@ def configure_logging(
+     for hdlr in logger.handlers[:]:
+         logger.removeHandler(hdlr)
+ 
+-    # Use standard logging handlers if rich logging is disabled
+-    if not fastmcp.settings.enable_rich_logging:
+-        # Create a standard StreamHandler for stderr
+-        handler = logging.StreamHandler()
+-        handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
++    if __debug__:
++        # Configure the handler for normal logs
++        handler = RichHandler(
++            console=Console(stderr=True),
++            **rich_kwargs,
++        )
++        handler.setFormatter(formatter)
++
++        # filter to exclude tracebacks
++        handler.addFilter(lambda record: record.exc_info is None)
++
++        # Configure the handler for tracebacks, for tracebacks we use a compressed format:
++        # no path or level name to maximize width available for the traceback
++        # suppress framework frames and limit the number of frames to 3
++
++        tracebacks_suppress = [
++            package_path
++            for package in ("fastmcp", "mcp", "pydantic")
++            if (package_path := _get_package_path(package)) is not None
++        ]
++
++        # Build traceback kwargs with defaults that can be overridden
++        traceback_kwargs = {
++            "console": Console(stderr=True),
++            "show_path": False,
++            "show_level": False,
++            "rich_tracebacks": enable_rich_tracebacks,
++            "tracebacks_max_frames": 3,
++            "tracebacks_suppress": tracebacks_suppress,
++        }
++        # Override defaults with user-provided values
++        traceback_kwargs.update(rich_kwargs)
++
++        traceback_handler = RichHandler(**traceback_kwargs)  # type: ignore[arg-type]  # ty:ignore[invalid-argument-type]
++        traceback_handler.setFormatter(formatter)
++
++        traceback_handler.addFilter(lambda record: record.exc_info is not None)
++
+         logger.addHandler(handler)
++        logger.addHandler(traceback_handler)
+         return
+ 
+-    # Configure the handler for normal logs
+-    handler = RichHandler(
+-        console=Console(stderr=True),
+-        **rich_kwargs,
+-    )
+-    handler.setFormatter(formatter)
+-
+-    # filter to exclude tracebacks
+-    handler.addFilter(lambda record: record.exc_info is None)
+-
+-    # Configure the handler for tracebacks, for tracebacks we use a compressed format:
+-    # no path or level name to maximize width available for the traceback
+-    # suppress framework frames and limit the number of frames to 3
+-
+-    tracebacks_suppress = [
+-        package_path
+-        for package in ("fastmcp", "mcp", "pydantic")
+-        if (package_path := _get_package_path(package)) is not None
+-    ]
+-
+-    # Build traceback kwargs with defaults that can be overridden
+-    traceback_kwargs = {
+-        "console": Console(stderr=True),
+-        "show_path": False,
+-        "show_level": False,
+-        "rich_tracebacks": enable_rich_tracebacks,
+-        "tracebacks_max_frames": 3,
+-        "tracebacks_suppress": tracebacks_suppress,
+-    }
+-    # Override defaults with user-provided values
+-    traceback_kwargs.update(rich_kwargs)
+-
+-    traceback_handler = RichHandler(**traceback_kwargs)  # type: ignore[arg-type]  # ty:ignore[invalid-argument-type]
+-    traceback_handler.setFormatter(formatter)
+-
+-    traceback_handler.addFilter(lambda record: record.exc_info is not None)
+-
++    # Use standard logging handlers if rich logging is disabled
++    handler = logging.StreamHandler()
++    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+     logger.addHandler(handler)
+-    logger.addHandler(traceback_handler)
+ 
+ 
+ @contextlib.contextmanager

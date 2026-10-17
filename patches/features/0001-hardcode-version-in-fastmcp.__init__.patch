@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alpha <dev@alpha93.kr>
+Date: Sat, 17 Oct 2026 17:12:00 +0900
+Subject: [PATCH] hardcode version in fastmcp.__init__
+
+Signed-off-by: Alpha <dev@alpha93.kr>
+
+diff --git a/fastmcp_slim/fastmcp/__init__.py b/fastmcp_slim/fastmcp/__init__.py
+index 05cc78b7..72039a3e 100644
+--- a/fastmcp_slim/fastmcp/__init__.py
++++ b/fastmcp_slim/fastmcp/__init__.py
+@@ -2,7 +2,6 @@
+ 
+ import importlib
+ import warnings
+-from importlib.metadata import PackageNotFoundError, version as _version
+ 
+ from fastmcp import _install_hints
+ from fastmcp._warnings import FastMCPDeprecationWarning
+@@ -29,10 +28,7 @@ if settings.log_enabled:
+         enable_rich_tracebacks=settings.enable_rich_tracebacks,
+     )
+ 
+-try:
+-    __version__ = _version("fastmcp-slim")
+-except PackageNotFoundError:
+-    __version__ = _version("fastmcp")
++__version__ = "4.1.0"
+ 
+ if settings.deprecation_warnings:
+     warnings.simplefilter("default", FastMCPDeprecationWarning)

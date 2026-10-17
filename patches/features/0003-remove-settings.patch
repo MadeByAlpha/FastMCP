@@ -1,0 +1,453 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alpha <dev@alpha93.kr>
+Date: Sat, 17 Oct 2026 17:22:40 +0900
+Subject: [PATCH] remove settings
+
+Signed-off-by: Alpha <dev@alpha93.kr>
+
+diff --git a/fastmcp_slim/fastmcp/__init__.py b/fastmcp_slim/fastmcp/__init__.py
+index d39b26f2..5fa1c63c 100644
+--- a/fastmcp_slim/fastmcp/__init__.py
++++ b/fastmcp_slim/fastmcp/__init__.py
+@@ -1,10 +1,8 @@
+ """FastMCP - An ergonomic MCP interface."""
+ 
+ import importlib
+-import warnings
+ 
+ from fastmcp._warnings import FastMCPDeprecationWarning
+-from fastmcp.settings import Settings
+ from fastmcp.utilities.logging import configure_logging as _configure_logging
+ 
+ if __debug__ and __import__("typing").TYPE_CHECKING:
+@@ -17,21 +15,11 @@ if __debug__ and __import__("typing").TYPE_CHECKING:
+         "FastMCP",
+         "FastMCPApp",
+         "FastMCPDeprecationWarning",
+-        "settings",
+     )
+ 
+-settings = Settings()
+-if settings.log_enabled:
+-    _configure_logging(
+-        level=settings.log_level,
+-        enable_rich_tracebacks=settings.enable_rich_tracebacks,
+-    )
+ 
+ __version__ = "4.1.0"
+ 
+-if settings.deprecation_warnings:
+-    warnings.simplefilter("default", FastMCPDeprecationWarning)
+-
+ 
+ # --- Lazy imports for performance (see #3292) ---
+ # Client exports and the client submodule are deferred so that server-only users
+diff --git a/fastmcp_slim/fastmcp/server/auth/jwt_issuer.py b/fastmcp_slim/fastmcp/server/auth/jwt_issuer.py
+index 6715e408..be1cf38f 100644
+--- a/fastmcp_slim/fastmcp/server/auth/jwt_issuer.py
++++ b/fastmcp_slim/fastmcp/server/auth/jwt_issuer.py
+@@ -59,14 +59,11 @@ def derive_jwt_key(
+         return base64.urlsafe_b64encode(derived_key)
+ 
+     if low_entropy_material is not None:
+-        iterations = (
+-            KDF_ITERATIONS_TEST if fastmcp.settings.test_mode else KDF_ITERATIONS
+-        )
+         pbkdf2 = PBKDF2HMAC(
+             algorithm=hashes.SHA256(),
+             length=32,
+             salt=salt.encode(),
+-            iterations=iterations,
++            iterations=KDF_ITERATIONS,
+         ).derive(key_material=low_entropy_material.encode())
+ 
+         return base64.urlsafe_b64encode(pbkdf2)
+diff --git a/fastmcp_slim/fastmcp/server/auth/oauth_proxy/proxy.py b/fastmcp_slim/fastmcp/server/auth/oauth_proxy/proxy.py
+index 9be3c634..60e9923f 100644
+--- a/fastmcp_slim/fastmcp/server/auth/oauth_proxy/proxy.py
++++ b/fastmcp_slim/fastmcp/server/auth/oauth_proxy/proxy.py
+@@ -71,7 +71,6 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
+ from starlette.routing import Route
+ from typing_extensions import override
+ 
+-from fastmcp import settings
+ from fastmcp.server.auth.auth import (
+     OAuthProvider,
+     PrivateKeyJWTClientAuthenticator,
+@@ -594,30 +593,7 @@ class OAuthProxy(OAuthProvider, ConsentMixin):
+         # different keys won't collide). Decryption errors are treated as cache misses
+         # rather than hard failures, so key rotation just causes re-registration.
+         if client_storage is None:
+-            storage_encryption_key = derive_jwt_key(
+-                high_entropy_material=jwt_signing_key.decode(),
+-                salt="fastmcp-storage-encryption-key",
+-            )
+-
+-            key_fingerprint = hashlib.sha256(storage_encryption_key).hexdigest()[:12]
+-            storage_dir = settings.home / "oauth-proxy" / key_fingerprint
+-            storage_dir.mkdir(parents=True, exist_ok=True)
+-
+-            file_store = FileTreeStore(
+-                data_directory=storage_dir,
+-                key_sanitization_strategy=FileTreeV1KeySanitizationStrategy(
+-                    storage_dir
+-                ),
+-                collection_sanitization_strategy=FileTreeV1CollectionSanitizationStrategy(
+-                    storage_dir
+-                ),
+-            )
+-
+-            client_storage = FernetEncryptionWrapper(
+-                key_value=file_store,
+-                fernet=Fernet(key=storage_encryption_key),
+-                raise_on_decryption_error=False,
+-            )
++            raise ValueError("Automatic client_storage creation is not supported in fastmcp-minimal.")
+ 
+         self._client_storage: AsyncKeyValue = client_storage
+ 
+diff --git a/fastmcp_slim/fastmcp/server/auth/ssrf.py b/fastmcp_slim/fastmcp/server/auth/ssrf.py
+index 8a26960e..3831d28c 100644
+--- a/fastmcp_slim/fastmcp/server/auth/ssrf.py
++++ b/fastmcp_slim/fastmcp/server/auth/ssrf.py
+@@ -307,50 +307,6 @@ async def validate_url(url: str, require_path: bool = False) -> ValidatedURL:
+     port = parsed.port or 443
+     path = parsed.path + ("?" + parsed.query if parsed.query else "")
+ 
+-    # Proxy mode (FASTMCP_SSRF_TRUST_PROXY): a trusted outbound proxy owns DNS and
+-    # egress, so resolving the hostname here is pointless — the IP we'd pin is not
+-    # the one the proxy dials, making the blocklist unenforceable theater. Skip
+-    # resolution and the blocklist entirely and signal proxy mode downstream with an
+-    # empty resolved_ips list. The scheme (HTTPS) and host checks above still run.
+-    if fastmcp.settings.ssrf_trust_proxy:
+-        # Skipping the blocklist is only safe if the request is *actually* routed
+-        # through a trusted proxy, so this does not try to predict whether it will
+-        # be — it controls it. Earlier revisions predicted httpx2's routing decision,
+-        # first by approximating NO_PROXY handling with urllib.request.proxy_bypass(),
+-        # then by replicating httpx2's own get_environment_proxies()/URLPattern
+-        # matching internally. Both were still predictions of a library with
+-        # open-ended NO_PROXY semantics, and each was found wrong for a different
+-        # NO_PROXY form (port-qualified, IPv6, scheme-qualified entries each broke a
+-        # different revision) — always in the dangerous direction of assuming
+-        # "proxied" for a request that actually went out direct.
+-        #
+-        # Instead, read the proxy URL directly from the environment and hand it to
+-        # httpx2 explicitly below, with trust_env disabled. With an explicit
+-        # `proxy=` and `trust_env=False`, httpx2 has no routing decision left to make
+-        # differently than assumed here: the request provably goes through that
+-        # proxy or the connection fails. NO_PROXY is therefore not evaluated in this
+-        # mode at all — a NO_PROXY'd host is routed through the proxy rather than
+-        # fetched direct with the blocklist already disabled, which is strictly safer
+-        # than the alternative (see the module docstring). If no proxy is configured,
+-        # there is nothing to route through, so refuse rather than fetch unprotected.
+-        proxy_url = _configured_proxy_url()
+-        if proxy_url is None:
+-            raise SSRFError(
+-                f"FASTMCP_SSRF_TRUST_PROXY is enabled but no HTTPS_PROXY/ALL_PROXY is "
+-                f"configured, so the request to {hostname} would go direct with SSRF "
+-                f"protection disabled. Set HTTPS_PROXY (or ALL_PROXY) to the trusted "
+-                f"proxy, or unset FASTMCP_SSRF_TRUST_PROXY to restore DNS/IP "
+-                f"validation."
+-            )
+-        return ValidatedURL(
+-            original_url=url,
+-            hostname=hostname,
+-            port=port,
+-            path=path,
+-            resolved_ips=[],
+-            proxy_url=proxy_url,
+-        )
+-
+     # Resolve and validate IPs (resolve_hostname raises rather than returning [], so a
+     # successful return here always yields a non-empty list — see ssrf_safe_fetch_response).
+     resolved_ips = await resolve_hostname(hostname, port)
+diff --git a/fastmcp_slim/fastmcp/server/mixins/transport.py b/fastmcp_slim/fastmcp/server/mixins/transport.py
+index 4f7e5a37..731a846b 100644
+--- a/fastmcp_slim/fastmcp/server/mixins/transport.py
++++ b/fastmcp_slim/fastmcp/server/mixins/transport.py
+@@ -72,8 +72,8 @@ class TransportMixin:
+ 
+     async def run_async(
+         self: FastMCP,
+-        transport: Transport | None = None,
+-        show_banner: bool | None = None,
++        transport: Transport = "stdio",
++        show_banner: bool = True,
+         **transport_kwargs: Any,
+     ) -> None:
+         """Run the FastMCP server asynchronously.
+@@ -83,10 +83,6 @@ class TransportMixin:
+             show_banner: Whether to display the server banner. If None, uses the
+                 FASTMCP_SHOW_SERVER_BANNER setting (default: True).
+         """
+-        if show_banner is None:
+-            show_banner = fastmcp.settings.show_server_banner
+-        if transport is None:
+-            transport = fastmcp.settings.transport
+         if transport not in {"stdio", "http", "sse", "streamable-http"}:
+             raise ValueError(f"Unknown transport: {transport}")
+ 
+@@ -254,16 +250,15 @@ class TransportMixin:
+         self: FastMCP,
+         show_banner: bool = True,
+         transport: Literal["http", "streamable-http", "sse"] = "http",
+-        host: str | None = None,
+-        port: int | None = None,
+-        log_level: str | None = None,
++        host: str = "127.0.0.1",
++        port: int = 8000,
++        log_level: str = "INFO",
+         path: str | None = None,
+         uvicorn_config: dict[str, Any] | None = None,
+         middleware: list[ASGIMiddleware] | None = None,
+         json_response: bool | None = None,
+-        stateless_http: bool | None = None,
+-        stateless: bool | None = None,
+-        host_origin_protection: HostOriginProtection | None = None,
++        stateless_http: bool = True,
++        host_origin_protection: HostOriginProtection = False,
+         allowed_hosts: list[str] | None = None,
+         allowed_origins: list[str] | None = None,
+         sockets: list[socket.socket] | None = None,
+@@ -280,7 +275,6 @@ class TransportMixin:
+             middleware: A list of middleware to apply to the app
+             json_response: Whether to use JSON response format (defaults to settings.json_response)
+             stateless_http: Whether to use stateless HTTP (defaults to settings.stateless_http)
+-            stateless: Alias for stateless_http for CLI consistency
+             host_origin_protection: Whether to validate Host and Origin headers
+                 before requests reach the MCP endpoint. Defaults to
+                 settings.http_host_origin_protection. "auto" protects
+@@ -291,34 +285,17 @@ class TransportMixin:
+                 cross-origin responses.
+             sockets: Pre-bound sockets to pass to Uvicorn
+         """
+-        # Allow stateless as alias for stateless_http
+-        if stateless is not None and stateless_http is None:
+-            stateless_http = stateless
+-
+-        # Resolve from settings/env var if not explicitly set
+-        if stateless_http is None:
+-            stateless_http = fastmcp.settings.stateless_http
+-
+         # SSE doesn't support stateless mode
+         if stateless_http and transport == "sse":
+             raise ValueError("SSE transport does not support stateless mode")
+ 
+-        host = host if host is not None else fastmcp.settings.host
+-        port = port if port is not None else fastmcp.settings.port
+-        resolved_host_origin_protection = (
+-            host_origin_protection
+-            if host_origin_protection is not None
+-            else fastmcp.settings.http_host_origin_protection
+-        )
+         resolved_allowed_hosts = _resolve_allowed_hosts_for_run(
+             host=host,
+-            host_origin_protection=resolved_host_origin_protection,
++            host_origin_protection=host_origin_protection,
+             allowed_hosts=allowed_hosts,
+-            configured_allowed_hosts=fastmcp.settings.http_allowed_hosts,
++            configured_allowed_hosts=None,
+         )
+-        default_log_level_to_use = (
+-            log_level if log_level is not None else fastmcp.settings.log_level
+-        ).lower()
++        default_log_level_to_use = log_level.lower()
+ 
+         app = self.http_app(
+             path=path,
+@@ -326,7 +303,7 @@ class TransportMixin:
+             middleware=middleware,
+             json_response=json_response,
+             stateless_http=stateless_http,
+-            host_origin_protection=resolved_host_origin_protection,
++            host_origin_protection=host_origin_protection,
+             allowed_hosts=resolved_allowed_hosts,
+             allowed_origins=allowed_origins,
+         )
+@@ -366,17 +343,19 @@ class TransportMixin:
+ 
+     def http_app(
+         self: FastMCP,
+-        path: str | None = None,
++        path: str = "/mcp",
+         middleware: list[ASGIMiddleware] | None = None,
+-        json_response: bool | None = None,
+-        stateless_http: bool | None = None,
++        json_response: bool = False,
++        stateless_http: bool = False,
+         transport: Literal["http", "streamable-http", "sse"] = "http",
+         event_store: EventStore | None = None,
+         retry_interval: int | None = None,
+-        host_origin_protection: HostOriginProtection | None = None,
++        host_origin_protection: HostOriginProtection = False,
+         allowed_hosts: list[str] | None = None,
+         allowed_origins: list[str] | None = None,
+-        session_idle_timeout: float | Literal["auto"] | None = None,
++        session_idle_timeout: float | Literal["auto"] | None = "auto",
++        message_path: str = "/messages/",
++        debug: bool = False,
+     ) -> StarletteWithLifespan:
+         """Create a Starlette app using the specified HTTP transport.
+ 
+@@ -414,68 +393,30 @@ class TransportMixin:
+         if transport in ("streamable-http", "http"):
+             return create_streamable_http_app(
+                 server=self,
+-                streamable_http_path=path
+-                if path is not None
+-                else fastmcp.settings.streamable_http_path,
++                streamable_http_path=path,
+                 event_store=event_store,
+                 retry_interval=retry_interval,
+                 auth=self.auth,
+-                json_response=(
+-                    json_response
+-                    if json_response is not None
+-                    else fastmcp.settings.json_response
+-                ),
+-                stateless_http=(
+-                    stateless_http
+-                    if stateless_http is not None
+-                    else fastmcp.settings.stateless_http
+-                ),
+-                debug=fastmcp.settings.debug,
++                json_response=json_response,
++                stateless_http=stateless_http,
++                debug=debug,
+                 middleware=middleware,
+-                host_origin_protection=(
+-                    host_origin_protection
+-                    if host_origin_protection is not None
+-                    else fastmcp.settings.http_host_origin_protection
+-                ),
+-                allowed_hosts=(
+-                    allowed_hosts
+-                    if allowed_hosts is not None
+-                    else fastmcp.settings.http_allowed_hosts
+-                ),
+-                allowed_origins=(
+-                    allowed_origins
+-                    if allowed_origins is not None
+-                    else fastmcp.settings.http_allowed_origins
+-                ),
+-                session_idle_timeout=(
+-                    session_idle_timeout
+-                    if session_idle_timeout is not None
+-                    else fastmcp.settings.http_session_idle_timeout
+-                ),
++                host_origin_protection=host_origin_protection,
++                allowed_hosts=allowed_hosts,
++                allowed_origins=allowed_origins,
++                session_idle_timeout=session_idle_timeout,
+             )
+         elif transport == "sse":
+             return create_sse_app(
+                 server=self,
+-                message_path=fastmcp.settings.message_path,
+-                sse_path=path if path is not None else fastmcp.settings.sse_path,
++                message_path=message_path,
++                sse_path=path,
+                 auth=self.auth,
+-                debug=fastmcp.settings.debug,
++                debug=debug,
+                 middleware=middleware,
+-                host_origin_protection=(
+-                    host_origin_protection
+-                    if host_origin_protection is not None
+-                    else fastmcp.settings.http_host_origin_protection
+-                ),
+-                allowed_hosts=(
+-                    allowed_hosts
+-                    if allowed_hosts is not None
+-                    else fastmcp.settings.http_allowed_hosts
+-                ),
+-                allowed_origins=(
+-                    allowed_origins
+-                    if allowed_origins is not None
+-                    else fastmcp.settings.http_allowed_origins
+-                ),
++                host_origin_protection=host_origin_protection,
++                allowed_hosts=allowed_hosts,
++                allowed_origins=allowed_origins,
+             )
+         else:
+             raise ValueError(f"Unknown transport: {transport}")
+diff --git a/fastmcp_slim/fastmcp/server/server.py b/fastmcp_slim/fastmcp/server/server.py
+index 9a2a6329..61981a89 100644
+--- a/fastmcp_slim/fastmcp/server/server.py
++++ b/fastmcp_slim/fastmcp/server/server.py
+@@ -102,7 +102,6 @@ from fastmcp.server.transforms import (
+     Transform,
+ )
+ from fastmcp.server.transforms.visibility import apply_session_transforms, is_enabled
+-from fastmcp.settings import DuplicateBehavior as DuplicateBehaviorSetting
+ from fastmcp.tools.base import Tool, ToolResult
+ from fastmcp.tools.function_tool import FunctionTool
+ from fastmcp.tools.tool_transform import ToolTransformConfig
+@@ -332,9 +331,9 @@ class FastMCP(
+         lifespan: LifespanCallable | Lifespan | None = None,
+         tools: Sequence[Tool | Callable[..., Any]] | None = None,
+         on_duplicate: DuplicateBehavior | None = None,
+-        mask_error_details: bool | None = None,
++        mask_error_details: bool = False,
+         dereference_schemas: bool = True,
+-        strict_input_validation: bool | None = None,
++        strict_input_validation: bool = False,
+         list_page_size: int | None = None,
+         resource_security: ResourceSecurity | None = DEFAULT_RESOURCE_SECURITY,
+         request_state_security: RequestStateSecurity | None = None,
+@@ -351,7 +350,7 @@ class FastMCP(
+         # Initialize Provider (sets up _transforms)
+         super().__init__()
+ 
+-        self._on_duplicate: DuplicateBehaviorSetting = on_duplicate or "warn"
++        self._on_duplicate: Literal["warn", "error", "replace", "ignore"] = on_duplicate or "warn"
+ 
+         # Resolve server default for background task support
+         self._support_tasks_by_default: bool = tasks if tasks is not None else False
+@@ -375,11 +374,7 @@ class FastMCP(
+             self.add_transform(t)
+ 
+         # Store mask_error_details for execution error handling
+-        self._mask_error_details: bool = (
+-            mask_error_details
+-            if mask_error_details is not None
+-            else fastmcp.settings.mask_error_details
+-        )
++        self._mask_error_details: bool = mask_error_details
+ 
+         # Store list_page_size for pagination of list operations
+         if list_page_size is not None and list_page_size <= 0:
+@@ -467,17 +462,9 @@ class FastMCP(
+                     tool = Tool.from_function(tool)
+                 self.add_tool(tool)
+ 
+-        self.strict_input_validation: bool = (
+-            strict_input_validation
+-            if strict_input_validation is not None
+-            else fastmcp.settings.strict_input_validation
+-        )
++        self.strict_input_validation: bool = strict_input_validation
+ 
+-        self.client_log_level: mcp_types.LoggingLevel | None = (
+-            client_log_level
+-            if client_log_level is not None
+-            else fastmcp.settings.client_log_level
+-        )
++        self.client_log_level: mcp_types.LoggingLevel | None = client_log_level
+ 
+         # Per-session minimum log level requested by clients via logging/setLevel.
+         # Keyed by session id (a sentinel for stdio where session_id is None).
+diff --git a/fastmcp_slim/fastmcp/utilities/exceptions.py b/fastmcp_slim/fastmcp/utilities/exceptions.py
+index 97cea8f2..87ec3afb 100644
+--- a/fastmcp_slim/fastmcp/utilities/exceptions.py
++++ b/fastmcp_slim/fastmcp/utilities/exceptions.py
+@@ -77,7 +77,4 @@ def get_catch_handlers() -> Mapping[
+     type[BaseException] | Iterable[type[BaseException]],
+     Callable[[BaseExceptionGroup[Any]], Any],
+ ]:
+-    if fastmcp.settings.client_raise_first_exceptiongroup_error:
+-        return _catch_handlers
+-    else:
+-        return {}
++    return _catch_handlers

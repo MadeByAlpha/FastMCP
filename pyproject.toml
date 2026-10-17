@@ -1,0 +1,93 @@
+[project]
+name = "fastmcp-minimal"
+version = "0.1.0"
+authors = [
+    { name = "Alpha", email = "dev@alpha93.kr" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "httpx2>=2.5.0",
+    "mcp>=2.0.0,<3.0.0",
+    "mcp-types>=2.3.0,<3.0.0",
+    "pydantic>=2.14.0",
+]
+
+[tool.uv.sources]
+makepatch = { git = "https://github.com/MadeByAlpha/makepatch.git" }
+
+
+[build-system]
+requires = [
+    "hatchling",
+    "makepatch @ git+https://github.com/MadeByAlpha/makepatch.git",
+]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "makepatch>=0.3.0",
+    "rich>=15.0.0",
+]
+
+[tool.hatch.build.hooks.makepatch]
+[tool.hatch.build.targets.wheel]
+packages = ["src/alpha93"]
+
+[tool.makepatch.source]
+upstream = "https://github.com/PrefectHQ/fastmcp.git"
+ref = "v4.1.0"
+include = { "fastmcp_slim/fastmcp" = "fastmcp" }
+exclude = [
+]
+work-exclude = [
+    ".agents/",
+    ".claude/",
+    ".cursor/",
+    ".github/",
+    "dev-docs/",
+    "docs/",
+    "examples/",
+    "fastmcp_remote/",
+    "fastmcp_slim/fastmcp/cli/",
+    "fastmcp_slim/fastmcp/client/",
+    "fastmcp_slim/fastmcp/utilities/tests.py",
+    "fastmcp_slim/fastmcp/utilities/version_check.py",
+    "fastmcp_slim/fastmcp/_compat.py",
+    "fastmcp_slim/fastmcp/_install_hints.py",
+    "fastmcp_slim/fastmcp/settings.py",
+    "fastmcp_slim/fastmcp/telemetry.py",
+    "scripts/",
+    "skills/",
+    "status-site/",
+    "tests/",
+    ".ccignore",
+    ".coderabbit.yaml",
+    ".gitleaks.toml",
+    ".pre-commit-config.yaml",
+    ".python-version",
+    "AGETNS.md",
+    "CLAUDE.md",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "justfile",
+    "logo.py",
+    "loq.toml",
+    "pyproject.toml",
+    "renovate.json",
+    "uv.lock",
+]
+
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.datastructures.Default"]
+
+[tool.ty.environment]
+root = [
+    "./typings",
+    "./src",
+    "./work"
+]
