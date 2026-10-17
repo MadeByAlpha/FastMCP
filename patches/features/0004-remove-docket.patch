@@ -1,0 +1,158 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alpha <dev@alpha93.kr>
+Date: Sat, 17 Oct 2026 17:41:08 +0900
+Subject: [PATCH] remove docket
+
+Signed-off-by: Alpha <dev@alpha93.kr>
+
+diff --git a/fastmcp_slim/fastmcp/server/context.py b/fastmcp_slim/fastmcp/server/context.py
+index ed5e1646..6c4cdfd6 100644
+--- a/fastmcp_slim/fastmcp/server/context.py
++++ b/fastmcp_slim/fastmcp/server/context.py
+@@ -279,15 +279,14 @@ class Context:
+         self._tokens.append(token)
+ 
+         # Set current server for dependency injection (use weakref to avoid reference cycles)
+-        from fastmcp.server.dependencies import _current_server, is_docket_available
++        from fastmcp.server.dependencies import _current_server
+ 
+         self._server_token = _current_server.set(weakref.ref(self.fastmcp))
+ 
+-        if not is_docket_available():
+-            # Without docket, the lifespan won't provide a SharedContext,
+-            # so create one scoped to this Context for Shared() dependencies.
+-            self._shared_context = SharedContext()
+-            await self._shared_context.__aenter__()
++        # Without docket, the lifespan won't provide a SharedContext,
++        # so create one scoped to this Context for Shared() dependencies.
++        self._shared_context = SharedContext()
++        await self._shared_context.__aenter__()
+ 
+         return self
+ 
+@@ -482,37 +481,6 @@ class Context:
+             )
+             return
+ 
+-        # Background: Update Docket execution progress (stored in Redis)
+-        # This makes progress visible via tasks/get and notifications/tasks/status
+-        from fastmcp.server.dependencies import is_docket_available
+-
+-        if not is_docket_available():
+-            return
+-
+-        try:
+-            from docket.dependencies import current_execution
+-
+-            execution = current_execution.get()
+-
+-            # Update progress in Redis using Docket's progress API.
+-            # Docket only exposes increment() (relative), so we compute
+-            # the delta from the last reported value stored on this execution.
+-            if total is not None:
+-                await execution.progress.set_total(int(total))
+-
+-            current = int(progress)
+-            last: int = getattr(execution, "_fastmcp_last_progress", 0)
+-            delta = current - last
+-            if delta > 0:
+-                await execution.progress.increment(delta)
+-            execution._fastmcp_last_progress = current  # type: ignore[attr-defined]  # ty:ignore[unresolved-attribute]
+-
+-            if message is not None:
+-                await execution.progress.set_message(message)
+-        except LookupError:
+-            # Not running in Docket worker context - no progress tracking available
+-            pass
+-
+     async def _paginate_list(
+         self,
+         call_handler: Callable[[Any, Any], Any],
+diff --git a/fastmcp_slim/fastmcp/server/dependencies.py b/fastmcp_slim/fastmcp/server/dependencies.py
+index 0f4980cf..ef129056 100644
+--- a/fastmcp_slim/fastmcp/server/dependencies.py
++++ b/fastmcp_slim/fastmcp/server/dependencies.py
+@@ -8,7 +8,6 @@ using the uncalled-for DI engine. The docket-specific dependencies
+ 
+ from __future__ import annotations
+ 
+-import importlib.metadata
+ import inspect
+ import weakref
+ from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Mapping
+@@ -28,7 +27,6 @@ from mcp.server.auth.provider import (
+ )
+ from mcp.server.context import ServerRequestContext
+ from mcp.server.session import ServerSession
+-from packaging.version import Version
+ from starlette.requests import Request
+ from uncalled_for import (
+     CycleError,
+@@ -168,7 +166,6 @@ __all__ = [
+     "get_http_request",
+     "get_server",
+     "get_session",
+-    "is_docket_available",
+     "resolve_dependencies",
+     "transform_context_annotations",
+     "without_injected_parameters",
+@@ -297,43 +294,6 @@ def _is_client_tool_call() -> bool:
+     return _client_dispatch.get()
+ 
+ 
+-# --- Docket availability check ---
+-
+-_DOCKET_AVAILABLE: bool | None = None
+-
+-
+-_MIN_DOCKET_VERSION = Version("0.19.0")
+-
+-
+-def is_docket_available() -> bool:
+-    """Check if a compatible pydocket (>= 0.19.0) is installed and importable.
+-
+-    Three things have to be true for fastmcp's task features to work:
+-      1. pydocket distribution metadata is discoverable
+-      2. its version is at least ``_MIN_DOCKET_VERSION`` (older versions are
+-         missing symbols like ``docket.dependencies.current_execution``,
+-         which fastmcp imports on the request hot path)
+-      3. the package actually imports — guards against broken/partial
+-         installs where metadata exists but ``import docket`` blows up
+-
+-    Any of those failing means we treat docket as unavailable and fall back
+-    to the no-tasks code paths instead of crashing deep inside a request.
+-    """
+-    global _DOCKET_AVAILABLE
+-    if _DOCKET_AVAILABLE is None:
+-        try:
+-            installed = Version(importlib.metadata.version("pydocket"))
+-            if installed < _MIN_DOCKET_VERSION:
+-                _DOCKET_AVAILABLE = False
+-            else:
+-                import docket  # noqa: F401
+-
+-                _DOCKET_AVAILABLE = True
+-        except (importlib.metadata.PackageNotFoundError, ImportError):
+-            _DOCKET_AVAILABLE = False
+-    return _DOCKET_AVAILABLE
+-
+-
+ # --- Context utilities ---
+ 
+ 
+@@ -1286,15 +1246,6 @@ class Progress(Dependency["Progress"]):
+ 
+         instance = Progress()
+ 
+-        if is_docket_available():
+-            try:
+-                from docket.dependencies import current_execution
+-
+-                instance._impl = current_execution.get().progress
+-                return instance
+-            except LookupError:
+-                pass
+-
+         instance._impl = InMemoryProgress()
+         return instance
+ 

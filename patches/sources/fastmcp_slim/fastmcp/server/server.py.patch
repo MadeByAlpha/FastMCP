@@ -1,0 +1,623 @@
+diff --git a/fastmcp_slim/fastmcp/server/server.py b/fastmcp_slim/fastmcp/server/server.py
+index 9a2a6329..f2069300 100644
+--- a/fastmcp_slim/fastmcp/server/server.py
++++ b/fastmcp_slim/fastmcp/server/server.py
+@@ -96,7 +96,6 @@ from fastmcp.server.providers.addressing import (
+ )
+ from fastmcp.server.providers.aggregate import AggregateProvider
+ from fastmcp.server.providers.base import hashed_lookup_target
+-from fastmcp.server.telemetry import server_span
+ from fastmcp.server.transforms import (
+     ToolTransform,
+     Transform,
+@@ -844,32 +843,31 @@ class FastMCP(
+                 )
+ 
+             # Core logic: list tools
+-            with server_span("tools/list", "tools/list", self.name, "tool", ""):
+-                # Get all tools, apply session transforms, then filter enabled.
+-                # App-only tools (meta.ui.visibility == ["app"]) are listed:
+-                # the mcp-apps spec puts visibility filtering on the host, and
+-                # a tool absent from tools/list cannot be forwarded by any
+-                # intermediary that routes by name.
+-                tools = list(await super().list_tools())
+-                tools = await apply_session_transforms(tools)
+-                tools = [t for t in tools if is_enabled(t)]
+-
+-                # Rewrite per-tool Prefab renderer URIs based on the tool's
+-                # mount-point address. The walk pairs each tool with the
+-                # provider that yielded it, computes the hashed URI, and
+-                # produces a model_copy with the URI in place. Original
+-                # Tool objects are not mutated.
+-                tools = self._rewrite_prefab_uris(tools)
+-
+-                # Tools from ToolInjectionMiddleware are listed ahead of the
+-                # providers' tools and authorized the same way. An injected
+-                # tool owns its name, so provider tools with that name are not
+-                # listed, matching what `get_tool()` resolves.
+-                injected = self._injected_tools()
+-                claimed = {tool.name for tool in injected}
+-                tools = [*injected, *(t for t in tools if t.name not in claimed)]
+-
+-                return [tool for tool in tools if await _tool_auth_allows(tool)]
++            # Get all tools, apply session transforms, then filter enabled.
++            # App-only tools (meta.ui.visibility == ["app"]) are listed:
++            # the mcp-apps spec puts visibility filtering on the host, and
++            # a tool absent from tools/list cannot be forwarded by any
++            # intermediary that routes by name.
++            tools = list(await super().list_tools())
++            tools = await apply_session_transforms(tools)
++            tools = [t for t in tools if is_enabled(t)]
++
++            # Rewrite per-tool Prefab renderer URIs based on the tool's
++            # mount-point address. The walk pairs each tool with the
++            # provider that yielded it, computes the hashed URI, and
++            # produces a model_copy with the URI in place. Original
++            # Tool objects are not mutated.
++            tools = self._rewrite_prefab_uris(tools)
++
++            # Tools from ToolInjectionMiddleware are listed ahead of the
++            # providers' tools and authorized the same way. An injected
++            # tool owns its name, so provider tools with that name are not
++            # listed, matching what `get_tool()` resolves.
++            injected = self._injected_tools()
++            claimed = {tool.name for tool in injected}
++            tools = [*injected, *(t for t in tools if t.name not in claimed)]
++
++            return [tool for tool in tools if await _tool_auth_allows(tool)]
+ 
+     async def _get_tool(
+         self, name: str, version: VersionSpec | None = None
+@@ -985,35 +983,32 @@ class FastMCP(
+                 )
+ 
+             # Core logic: list resources
+-            with server_span(
+-                "resources/list", "resources/list", self.name, "resource", ""
+-            ):
+-                # Get all resources, apply session transforms, then filter enabled
+-                resources = list(await super().list_resources())
+-                resources = await apply_session_transforms(resources)
+-                resources = [r for r in resources if is_enabled(r)]
+-
+-                # Append synthetic Prefab renderer resources — one per
+-                # prefab tool, hashed by mount address. These don't live on
+-                # any provider's storage; they're computed on demand.
+-                from fastmcp.server.providers.prefab_synthesis import (
+-                    synthesize_prefab_resources,
+-                )
++            # Get all resources, apply session transforms, then filter enabled
++            resources = list(await super().list_resources())
++            resources = await apply_session_transforms(resources)
++            resources = [r for r in resources if is_enabled(r)]
++
++            # Append synthetic Prefab renderer resources — one per
++            # prefab tool, hashed by mount address. These don't live on
++            # any provider's storage; they're computed on demand.
++            from fastmcp.server.providers.prefab_synthesis import (
++                synthesize_prefab_resources,
++            )
+ 
+-                resources.extend(await synthesize_prefab_resources(self))
+-
+-                skip_auth, token = _get_auth_context()
+-                authorized: list[Resource] = []
+-                for resource in resources:
+-                    if not skip_auth and resource.auth is not None:
+-                        ctx = AuthContext(token=token, component=resource)
+-                        try:
+-                            if not await run_auth_checks(resource.auth, ctx):
+-                                continue
+-                        except AuthorizationError:
++            resources.extend(await synthesize_prefab_resources(self))
++
++            skip_auth, token = _get_auth_context()
++            authorized: list[Resource] = []
++            for resource in resources:
++                if not skip_auth and resource.auth is not None:
++                    ctx = AuthContext(token=token, component=resource)
++                    try:
++                        if not await run_auth_checks(resource.auth, ctx):
+                             continue
+-                    authorized.append(resource)
+-                return authorized
++                    except AuthorizationError:
++                        continue
++                authorized.append(resource)
++            return authorized
+ 
+     async def _get_resource(
+         self, uri: str, version: VersionSpec | None = None
+@@ -1122,30 +1117,23 @@ class FastMCP(
+                 )
+ 
+             # Core logic: list resource templates
+-            with server_span(
+-                "resources/templates/list",
+-                "resources/templates/list",
+-                self.name,
+-                "resource_template",
+-                "",
+-            ):
+-                # Get all templates, apply session transforms, then filter enabled
+-                templates = list(await super().list_resource_templates())
+-                templates = await apply_session_transforms(templates)
+-                templates = [t for t in templates if is_enabled(t)]
+-
+-                skip_auth, token = _get_auth_context()
+-                authorized: list[ResourceTemplate] = []
+-                for template in templates:
+-                    if not skip_auth and template.auth is not None:
+-                        ctx = AuthContext(token=token, component=template)
+-                        try:
+-                            if not await run_auth_checks(template.auth, ctx):
+-                                continue
+-                        except AuthorizationError:
++            # Get all templates, apply session transforms, then filter enabled
++            templates = list(await super().list_resource_templates())
++            templates = await apply_session_transforms(templates)
++            templates = [t for t in templates if is_enabled(t)]
++
++            skip_auth, token = _get_auth_context()
++            authorized: list[ResourceTemplate] = []
++            for template in templates:
++                if not skip_auth and template.auth is not None:
++                    ctx = AuthContext(token=token, component=template)
++                    try:
++                        if not await run_auth_checks(template.auth, ctx):
+                             continue
+-                    authorized.append(template)
+-                return authorized
++                    except AuthorizationError:
++                        continue
++                authorized.append(template)
++            return authorized
+ 
+     async def _get_resource_template(
+         self, uri: str, version: VersionSpec | None = None
+@@ -1254,24 +1242,23 @@ class FastMCP(
+                 )
+ 
+             # Core logic: list prompts
+-            with server_span("prompts/list", "prompts/list", self.name, "prompt", ""):
+-                # Get all prompts, apply session transforms, then filter enabled
+-                prompts = list(await super().list_prompts())
+-                prompts = await apply_session_transforms(prompts)
+-                prompts = [p for p in prompts if is_enabled(p)]
+-
+-                skip_auth, token = _get_auth_context()
+-                authorized: list[Prompt] = []
+-                for prompt in prompts:
+-                    if not skip_auth and prompt.auth is not None:
+-                        ctx = AuthContext(token=token, component=prompt)
+-                        try:
+-                            if not await run_auth_checks(prompt.auth, ctx):
+-                                continue
+-                        except AuthorizationError:
++            # Get all prompts, apply session transforms, then filter enabled
++            prompts = list(await super().list_prompts())
++            prompts = await apply_session_transforms(prompts)
++            prompts = [p for p in prompts if is_enabled(p)]
++
++            skip_auth, token = _get_auth_context()
++            authorized: list[Prompt] = []
++            for prompt in prompts:
++                if not skip_auth and prompt.auth is not None:
++                    ctx = AuthContext(token=token, component=prompt)
++                    try:
++                        if not await run_auth_checks(prompt.auth, ctx):
+                             continue
+-                    authorized.append(prompt)
+-                return authorized
++                    except AuthorizationError:
++                        continue
++                authorized.append(prompt)
++            return authorized
+ 
+     async def _get_prompt(
+         self, name: str, version: VersionSpec | None = None
+@@ -1441,95 +1428,86 @@ class FastMCP(
+                 return await self._rebind_prefab_tool_names(dispatched)
+ 
+             # Core logic: find and execute tool
+-            with server_span(
+-                f"tools/call {name}",
+-                "tools/call",
+-                self.name,
+-                "tool",
+-                name,
+-                tool_name=name,
+-            ) as span:
+-                # Try normal display-name resolution first.
+-                tool: Tool | None = await self.get_tool(name, version=version)
+-
+-                # If that fails, try hashed-name dispatch, which finds the
+-                # tool whose stored hash matches the parsed prefix.
+-                if tool is None:
+-                    hashed = parse_hashed_backend_name(name)
+-                    if hashed is not None:
+-                        digest, local_name = hashed
+-                        tool = await self.get_tool_by_hash(digest, local_name)
+-
+-                if tool is None:
+-                    raise NotFoundError(f"Unknown tool: {name!r}")
+-                span.set_attributes(tool.get_span_attributes())
+-                try:
+-                    return await tool._run(arguments or {})
+-                except ValidationError as e:
+-                    cause = e.__cause__
+-                    if isinstance(cause, PydanticValidationError):
+-                        logger.warning(
+-                            "Invalid arguments for tool %r: %s",
+-                            name,
+-                            _validation_error_summary(cause),
+-                        )
+-                    else:
+-                        logger.warning("Invalid arguments for tool %r", name)
+-                    raise
+-                except FastMCPError as e:
+-                    logger.log(
+-                        e.log_level, f"Error calling tool {name!r}", exc_info=False
+-                    )
+-                    raise
+-                except PydanticValidationError as e:
+-                    # A pydantic error that is NOT an argument-validation failure
+-                    # (e.g. raised by a non-FunctionTool's own validation). Kept
+-                    # for backward compatibility.
++            # Try normal display-name resolution first.
++            tool: Tool | None = await self.get_tool(name, version=version)
++
++            # If that fails, try hashed-name dispatch, which finds the
++            # tool whose stored hash matches the parsed prefix.
++            if tool is None:
++                hashed = parse_hashed_backend_name(name)
++                if hashed is not None:
++                    digest, local_name = hashed
++                    tool = await self.get_tool_by_hash(digest, local_name)
++
++            if tool is None:
++                raise NotFoundError(f"Unknown tool: {name!r}")
++            try:
++                return await tool._run(arguments or {})
++            except ValidationError as e:
++                cause = e.__cause__
++                if isinstance(cause, PydanticValidationError):
+                     logger.warning(
+                         "Invalid arguments for tool %r: %s",
+                         name,
+-                        _validation_error_summary(e),
++                        _validation_error_summary(cause),
+                     )
+-                    raise
+-                except Exception as e:
+-                    # Most MCPErrors raised under a tool describe how the call
+-                    # went — a timeout, an upstream error a proxy forwarded —
+-                    # and are masked into an `isError` result like any other
+-                    # failure. A missing-client-capability error is different:
+-                    # it says the request cannot be serviced at all, and
+-                    # SEP-2575 requires it on the wire as -32021 (HTTP 400).
+-                    # Flattening it into a result would drop the code and tell
+-                    # the client the call had succeeded.
+-                    if (
+-                        isinstance(e, MCPError)
+-                        and e.error.code == MISSING_REQUIRED_CLIENT_CAPABILITY
+-                    ):
+-                        logger.debug(
+-                            "Tool %r requires a client capability the client did "
+-                            "not declare",
+-                            name,
+-                        )
+-                        raise
+-                    # An upstream HTTP error response is an answer from the
+-                    # upstream API, not a crash in the tool: skip the traceback.
+-                    status_code = get_http_status_code(e)
+-                    logger.error(
+-                        f"Error calling tool {name!r}", exc_info=status_code is None
++                else:
++                    logger.warning("Invalid arguments for tool %r", name)
++                raise
++            except FastMCPError as e:
++                logger.log(
++                    e.log_level, f"Error calling tool {name!r}", exc_info=False
++                )
++                raise
++            except PydanticValidationError as e:
++                # A pydantic error that is NOT an argument-validation failure
++                # (e.g. raised by a non-FunctionTool's own validation). Kept
++                # for backward compatibility.
++                logger.warning(
++                    "Invalid arguments for tool %r: %s",
++                    name,
++                    _validation_error_summary(e),
++                )
++                raise
++            except Exception as e:
++                # Most MCPErrors raised under a tool describe how the call
++                # went — a timeout, an upstream error a proxy forwarded —
++                # and are masked into an `isError` result like any other
++                # failure. A missing-client-capability error is different:
++                # it says the request cannot be serviced at all, and
++                # SEP-2575 requires it on the wire as -32021 (HTTP 400).
++                # Flattening it into a result would drop the code and tell
++                # the client the call had succeeded.
++                if (
++                    isinstance(e, MCPError)
++                    and e.error.code == MISSING_REQUIRED_CLIENT_CAPABILITY
++                ):
++                    logger.debug(
++                        "Tool %r requires a client capability the client did "
++                        "not declare",
++                        name,
+                     )
+-                    # Handle actionable errors that should reach the LLM
+-                    # even when masking is enabled
+-                    if status_code == 429:
+-                        raise ToolError(
+-                            "Rate limited by upstream API, please retry later"
+-                        ) from e
+-                    if is_timeout_error(e):
+-                        raise ToolError(
+-                            "Upstream request timed out, please retry"
+-                        ) from e
+-                    # Standard masking logic
+-                    if self._mask_error_details:
+-                        raise ToolError(f"Error calling tool {name!r}") from e
+-                    raise ToolError(f"Error calling tool {name!r}: {e}") from e
++                    raise
++                # An upstream HTTP error response is an answer from the
++                # upstream API, not a crash in the tool: skip the traceback.
++                status_code = get_http_status_code(e)
++                logger.error(
++                    f"Error calling tool {name!r}", exc_info=status_code is None
++                )
++                # Handle actionable errors that should reach the LLM
++                # even when masking is enabled
++                if status_code == 429:
++                    raise ToolError(
++                        "Rate limited by upstream API, please retry later"
++                    ) from e
++                if is_timeout_error(e):
++                    raise ToolError(
++                        "Upstream request timed out, please retry"
++                    ) from e
++                # Standard masking logic
++                if self._mask_error_details:
++                    raise ToolError(f"Error calling tool {name!r}") from e
++                raise ToolError(f"Error calling tool {name!r}: {e}") from e
+ 
+     async def read_resource(
+         self,
+@@ -1578,96 +1556,27 @@ class FastMCP(
+                 )
+ 
+             # Core logic: find and read resource (providers queried in parallel)
+-            with server_span(
+-                "resources/read",
+-                "resources/read",
+-                self.name,
+-                "resource",
+-                uri,
+-                resource_uri=uri,
+-            ) as span:
+-                # Intercept synthetic Prefab renderer URIs before normal
+-                # resolution. The resource isn't stored anywhere — we
+-                # build it on demand from the matching tool's CSP.
+-                from fastmcp.server.providers.prefab_synthesis import (
+-                    synthesize_prefab_resource_by_uri,
+-                )
+-
+-                synthesized = await synthesize_prefab_resource_by_uri(self, uri)
+-                if synthesized is not None:
+-                    span.set_attributes(synthesized.get_span_attributes())
+-                    return await synthesized._read()
+-
+-                # Try concrete resources first (transforms + auth via _get_resource)
+-                resource = await self.get_resource(uri, version=version)
+-                if resource is not None:
+-                    span.set_attributes(resource.get_span_attributes())
+-                    try:
+-                        return await resource._read()
+-                    except FastMCPError as e:
+-                        logger.log(
+-                            e.log_level,
+-                            f"Error reading resource {uri!r}",
+-                            exc_info=True,
+-                        )
+-                        raise
+-                    except MCPError:
+-                        logger.exception(f"Error reading resource {uri!r}")
+-                        raise
+-                    except Exception as e:
+-                        logger.exception(f"Error reading resource {uri!r}")
+-                        # Handle actionable errors that should reach the LLM
+-                        if get_http_status_code(e) == 429:
+-                            raise ResourceError(
+-                                "Rate limited by upstream API, please retry later"
+-                            ) from e
+-                        if is_timeout_error(e):
+-                            raise ResourceError(
+-                                "Upstream request timed out, please retry"
+-                            ) from e
+-                        # Standard masking logic
+-                        if self._mask_error_details:
+-                            raise ResourceError(
+-                                f"Error reading resource {uri!r}"
+-                            ) from e
+-                        raise ResourceError(
+-                            f"Error reading resource {uri!r}: {e}"
+-                        ) from e
++            # Intercept synthetic Prefab renderer URIs before normal
++            # resolution. The resource isn't stored anywhere — we
++            # build it on demand from the matching tool's CSP.
++            from fastmcp.server.providers.prefab_synthesis import (
++                synthesize_prefab_resource_by_uri,
++            )
+ 
+-                # Try templates (transforms + auth via get_resource_template)
+-                template = await self.get_resource_template(uri, version=version)
+-                if template is None:
+-                    if version is None:
+-                        raise NotFoundError(f"Unknown resource: {uri!r}")
+-                    raise NotFoundError(
+-                        f"Unknown resource: {uri!r} version {version!r}"
+-                    )
+-                span.set_attributes(template.get_span_attributes())
+-                params = template.matches(uri)
+-                assert params is not None
+-
+-                # Path-security screening: reject traversal / absolute-path /
+-                # null-byte payloads in extracted parameter values BEFORE the
+-                # handler runs. This is the single chokepoint for every
+-                # templated read (local decorator and provider-sourced), so
+-                # enforcement lives here rather than in any decorator.
+-                security = template.resolve_security(self._resource_security)
+-                if security is not None:
+-                    failed = security.validate(params)
+-                    if failed is not None:
+-                        logger.debug(
+-                            "Rejected resource %r: parameter %r failed "
+-                            "path-security screening",
+-                            uri,
+-                            failed,
+-                        )
+-                        raise ResourceSecurityError(f"Unknown resource: {uri!r}")
++            synthesized = await synthesize_prefab_resource_by_uri(self, uri)
++            if synthesized is not None:
++                return await synthesized._read()
+ 
++            # Try concrete resources first (transforms + auth via _get_resource)
++            resource = await self.get_resource(uri, version=version)
++            if resource is not None:
+                 try:
+-                    return await template._read(uri, params)
++                    return await resource._read()
+                 except FastMCPError as e:
+                     logger.log(
+-                        e.log_level, f"Error reading resource {uri!r}", exc_info=True
++                        e.log_level,
++                        f"Error reading resource {uri!r}",
++                        exc_info=True,
+                     )
+                     raise
+                 except MCPError:
+@@ -1686,8 +1595,66 @@ class FastMCP(
+                         ) from e
+                     # Standard masking logic
+                     if self._mask_error_details:
+-                        raise ResourceError(f"Error reading resource {uri!r}") from e
+-                    raise ResourceError(f"Error reading resource {uri!r}: {e}") from e
++                        raise ResourceError(
++                            f"Error reading resource {uri!r}"
++                        ) from e
++                    raise ResourceError(
++                        f"Error reading resource {uri!r}: {e}"
++                    ) from e
++
++            # Try templates (transforms + auth via get_resource_template)
++            template = await self.get_resource_template(uri, version=version)
++            if template is None:
++                if version is None:
++                    raise NotFoundError(f"Unknown resource: {uri!r}")
++                raise NotFoundError(
++                    f"Unknown resource: {uri!r} version {version!r}"
++                )
++            params = template.matches(uri)
++            assert params is not None
++
++            # Path-security screening: reject traversal / absolute-path /
++            # null-byte payloads in extracted parameter values BEFORE the
++            # handler runs. This is the single chokepoint for every
++            # templated read (local decorator and provider-sourced), so
++            # enforcement lives here rather than in any decorator.
++            security = template.resolve_security(self._resource_security)
++            if security is not None:
++                failed = security.validate(params)
++                if failed is not None:
++                    logger.debug(
++                        "Rejected resource %r: parameter %r failed "
++                        "path-security screening",
++                        uri,
++                        failed,
++                    )
++                    raise ResourceSecurityError(f"Unknown resource: {uri!r}")
++
++            try:
++                return await template._read(uri, params)
++            except FastMCPError as e:
++                logger.log(
++                    e.log_level, f"Error reading resource {uri!r}", exc_info=True
++                )
++                raise
++            except MCPError:
++                logger.exception(f"Error reading resource {uri!r}")
++                raise
++            except Exception as e:
++                logger.exception(f"Error reading resource {uri!r}")
++                # Handle actionable errors that should reach the LLM
++                if get_http_status_code(e) == 429:
++                    raise ResourceError(
++                        "Rate limited by upstream API, please retry later"
++                    ) from e
++                if is_timeout_error(e):
++                    raise ResourceError(
++                        "Upstream request timed out, please retry"
++                    ) from e
++                # Standard masking logic
++                if self._mask_error_details:
++                    raise ResourceError(f"Error reading resource {uri!r}") from e
++                raise ResourceError(f"Error reading resource {uri!r}: {e}") from e
+ 
+     async def render_prompt(
+         self,
+@@ -1741,33 +1708,24 @@ class FastMCP(
+ 
+             # Core logic: find and render prompt (providers queried in parallel)
+             # Use get_prompt to apply transforms and filter disabled
+-            with server_span(
+-                f"prompts/get {name}",
+-                "prompts/get",
+-                self.name,
+-                "prompt",
+-                name,
+-                prompt_name=name,
+-            ) as span:
+-                prompt = await self.get_prompt(name, version=version)
+-                if prompt is None:
+-                    raise NotFoundError(f"Unknown prompt: {name!r}")
+-                span.set_attributes(prompt.get_span_attributes())
+-                try:
+-                    return await prompt._render(arguments)
+-                except FastMCPError as e:
+-                    logger.log(
+-                        e.log_level, f"Error rendering prompt {name!r}", exc_info=True
+-                    )
+-                    raise
+-                except MCPError:
+-                    logger.exception(f"Error rendering prompt {name!r}")
+-                    raise
+-                except Exception as e:
+-                    logger.exception(f"Error rendering prompt {name!r}")
+-                    if self._mask_error_details:
+-                        raise PromptError(f"Error rendering prompt {name!r}") from e
+-                    raise PromptError(f"Error rendering prompt {name!r}: {e}") from e
++            prompt = await self.get_prompt(name, version=version)
++            if prompt is None:
++                raise NotFoundError(f"Unknown prompt: {name!r}")
++            try:
++                return await prompt._render(arguments)
++            except FastMCPError as e:
++                logger.log(
++                    e.log_level, f"Error rendering prompt {name!r}", exc_info=True
++                )
++                raise
++            except MCPError:
++                logger.exception(f"Error rendering prompt {name!r}")
++                raise
++            except Exception as e:
++                logger.exception(f"Error rendering prompt {name!r}")
++                if self._mask_error_details:
++                    raise PromptError(f"Error rendering prompt {name!r}") from e
++                raise PromptError(f"Error rendering prompt {name!r}: {e}") from e
+ 
+     def add_tool(self, tool: Tool | Callable[..., Any]) -> Tool:
+         """Add a tool to the server.

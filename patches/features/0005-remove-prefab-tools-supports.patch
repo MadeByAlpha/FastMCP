@@ -1,0 +1,345 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alpha <dev@alpha93.kr>
+Date: Sat, 17 Oct 2026 17:44:47 +0900
+Subject: [PATCH] remove prefab tools supports
+
+Signed-off-by: Alpha <dev@alpha93.kr>
+
+diff --git a/fastmcp_slim/fastmcp/server/providers/local_provider/decorators/tools.py b/fastmcp_slim/fastmcp/server/providers/local_provider/decorators/tools.py
+index 6a368956..b647286c 100644
+--- a/fastmcp_slim/fastmcp/server/providers/local_provider/decorators/tools.py
++++ b/fastmcp_slim/fastmcp/server/providers/local_provider/decorators/tools.py
+@@ -28,7 +28,6 @@ from mcp_types import ToolAnnotations
+ from fastmcp.tools.base import Tool
+ from fastmcp.tools.function_tool import FunctionTool
+ from fastmcp.utilities.authorization import AuthCheck
+-from fastmcp.utilities.prefab import is_prefab_type, prefab_available
+ from fastmcp.utilities.tasks import TaskConfig
+ from fastmcp.utilities.types import AnyFunction, NotSet, NotSetT
+ 
+@@ -42,65 +41,6 @@ DuplicateBehavior = Literal["error", "warn", "replace", "ignore"]
+ PREFAB_RENDERER_URI = "ui://prefab/renderer.html"
+ 
+ 
+-def _is_prefab_type(tp: Any) -> bool:
+-    """Check if *tp* is or contains a prefab type, recursing through unions and Annotated."""
+-    if is_prefab_type(tp):
+-        return True
+-    origin = get_origin(tp)
+-    if origin is Union or origin is types.UnionType or origin is Annotated:
+-        return any(_is_prefab_type(a) for a in get_args(tp))
+-    return False
+-
+-
+-def _has_prefab_return_type(tool: Tool) -> bool:
+-    """Check if a FunctionTool's return type annotation is a prefab type."""
+-    if not isinstance(tool, FunctionTool):
+-        return False
+-    rt = tool.return_type
+-    if rt is None or rt is inspect.Parameter.empty:
+-        return False
+-    return _is_prefab_type(rt)
+-
+-
+-def _stamp_prefab_marker(tool: Tool) -> None:
+-    """Mark a tool as needing a Prefab renderer resource.
+-
+-    Sets ``meta["ui"]["resourceUri"]`` to a placeholder URI. The server
+-    recognizes the placeholder at list_tools / list_resources / read_resource
+-    time and synthesizes a per-tool resource on the fly with a hashed URI
+-    derived from the tool's mount-point address. Nothing is stored — the
+-    renderer HTML and CSP are generated on demand from the tool's own meta.
+-    """
+-    from fastmcp.apps.config import AppConfig, app_config_to_meta_dict
+-
+-    app_config = AppConfig(resource_uri=PREFAB_RENDERER_URI)
+-    meta = dict(tool.meta) if tool.meta else {}
+-    meta["ui"] = app_config_to_meta_dict(app_config)
+-    tool.meta = meta
+-
+-
+-def _maybe_apply_prefab_ui(provider: LocalProvider, tool: Tool) -> None:
+-    """Mark a tool as a Prefab tool if its config or return type implies it.
+-
+-    Per-tool renderer resources are synthesized lazily at list/read time;
+-    here we only normalize the tool's meta so the synthesis pass can spot
+-    it. ``app=True``, return-type inference, and ``PrefabAppConfig`` all
+-    funnel through the same placeholder marker.
+-    """
+-    meta = tool.meta or {}
+-    ui = meta.get("ui")
+-
+-    if ui is True and prefab_available():
+-        # Explicit app=True: stamp the placeholder so the synthesizer finds it.
+-        _stamp_prefab_marker(tool)
+-    elif ui is None and _has_prefab_return_type(tool):
+-        # Inference: return type is a prefab type, stamp the placeholder.
+-        _stamp_prefab_marker(tool)
+-    # Otherwise the tool either has no ui meta at all (not a prefab tool)
+-    # or it already has a fully-formed dict from FastMCP.tool(app=...) — the
+-    # synthesizer picks up both flavors by looking for the placeholder URI.
+-
+-
+ class ToolDecoratorMixin:
+     """Mixin class providing tool decorator functionality for LocalProvider.
+ 
+@@ -160,7 +100,6 @@ class ToolDecoratorMixin:
+             return added
+         if not enabled:
+             self.disable(keys={tool.key})
+-        _maybe_apply_prefab_ui(self, tool)
+         return tool
+ 
+     @overload
+diff --git a/fastmcp_slim/fastmcp/server/server.py b/fastmcp_slim/fastmcp/server/server.py
+index ccee099a..861141ac 100644
+--- a/fastmcp_slim/fastmcp/server/server.py
++++ b/fastmcp_slim/fastmcp/server/server.py
+@@ -667,96 +667,6 @@ class FastMCP(
+         self._register_provider_extensions(provider)
+         super().add_provider(provider, namespace=namespace)
+ 
+-    def _rewrite_prefab_uris(self, tools: list[Tool]) -> list[Tool]:
+-        """Replace placeholder Prefab URIs with per-tool hashed ones.
+-
+-        For each tool whose ``meta.ui.resourceUri`` is the placeholder,
+-        reads the tool's stored hash from ``meta.fastmcp.tool_hash``
+-        and rewrites the URI to the per-tool form. Also strips CSP from
+-        tool meta (it belongs on the resource). Produces ``model_copy``
+-        views — originals are untouched.
+-        """
+-        from fastmcp.server.providers.prefab_synthesis import (
+-            _is_prefab_tool,
+-            rewrite_tool_meta_for_wire,
+-        )
+-
+-        return [
+-            rewrite_tool_meta_for_wire(t) if _is_prefab_tool(t) else t for t in tools
+-        ]
+-
+-    async def _rebind_prefab_tool_names(self, result: Any) -> Any:
+-        """Re-address a Prefab payload's tool references to this server's names.
+-
+-        Runs on the way out of every ``tools/call``, above the middleware
+-        chain so a payload is re-addressed however it was produced. Servers
+-        unwind innermost-first, so the outermost server rewrites last and its
+-        names — the only ones a client can actually invoke — are what ship.
+-
+-        A call does not always answer with a tool result: submitting a task
+-        answers with the task's metadata. Anything that is not a tool result
+-        passes through untouched.
+-
+-        An identity claimed by more than one tool is not bound. That happens
+-        when one app is composed into a server twice, which leaves no fact
+-        anywhere in the listing that says which copy a UI belongs to. The
+-        reference keeps its identity-addressed form, and the dispatcher
+-        reports the ambiguity rather than binding to a coin flip.
+-        """
+-        from fastmcp.server.providers.prefab_payload import (
+-            payload_has_identities,
+-            rewrite_payload_tool_names,
+-        )
+-
+-        if not isinstance(result, ToolResult):
+-            return result
+-
+-        payload = result.structured_content
+-        if not payload_has_identities(payload):
+-            return result
+-
+-        # Binding is safe only where one identity, one name, and one
+-        # component all agree. Each is tracked separately: collapsing them
+-        # early is what lets a duplicated app pass as a single tool.
+-        #
+-        # The middleware chain runs, because the binding has to describe the
+-        # listing a client will actually see. Middleware adds, removes and
+-        # shadows tools — an injected tool sharing a backend's name owns that
+-        # name at call time, and a listing taken beneath middleware would not
+-        # know it exists.
+-        claimed_by: dict[str, list[Tool]] = {}
+-        owners_of: dict[str, set[str | None]] = {}
+-        for tool in await self.list_tools():
+-            identity = tool_identity(tool)
+-            owners_of.setdefault(tool.name, set()).add(identity)
+-            if identity is not None:
+-                claimed_by.setdefault(identity, []).append(tool)
+-
+-        def resolve(identity: str) -> str | None:
+-            tools = claimed_by.get(identity, [])
+-            names = {tool.name for tool in tools}
+-            if len(names) != 1:
+-                # Several names carry this identity: the app is composed more
+-                # than once and nothing says which copy the UI belongs to.
+-                return None
+-
+-            # One name can still be several components. `key` is the canonical
+-            # identity — type, name and version — so versions of one tool have
+-            # distinct keys while copies of one app repeat a key. A repeat
+-            # means two components are indistinguishable, which is worse than
+-            # the renamed case, not better.
+-            if len({tool.key for tool in tools}) != len(tools):
+-                return None
+-
+-            (name,) = names
+-            # And the name has to lead back. Two apps can each expose `save`,
+-            # or a plain tool can share the name — binding then hands one
+-            # app's button to someone else's implementation.
+-            return name if owners_of.get(name) == {identity} else None
+-
+-        rewrite_payload_tool_names(payload, resolve)
+-        return result
+-
+     # -------------------------------------------------------------------------
+     # Provider interface overrides - inherited from AggregateProvider
+     # -------------------------------------------------------------------------
+@@ -839,13 +749,6 @@ class FastMCP(
+             tools = await apply_session_transforms(tools)
+             tools = [t for t in tools if is_enabled(t)]
+ 
+-            # Rewrite per-tool Prefab renderer URIs based on the tool's
+-            # mount-point address. The walk pairs each tool with the
+-            # provider that yielded it, computes the hashed URI, and
+-            # produces a model_copy with the URI in place. Original
+-            # Tool objects are not mutated.
+-            tools = self._rewrite_prefab_uris(tools)
+-
+             # Tools from ToolInjectionMiddleware are listed ahead of the
+             # providers' tools and authorized the same way. An injected
+             # tool owns its name, so provider tools with that name are not
+@@ -975,15 +878,6 @@ class FastMCP(
+             resources = await apply_session_transforms(resources)
+             resources = [r for r in resources if is_enabled(r)]
+ 
+-            # Append synthetic Prefab renderer resources — one per
+-            # prefab tool, hashed by mount address. These don't live on
+-            # any provider's storage; they're computed on demand.
+-            from fastmcp.server.providers.prefab_synthesis import (
+-                synthesize_prefab_resources,
+-            )
+-
+-            resources.extend(await synthesize_prefab_resources(self))
+-
+             skip_auth, token = _get_auth_context()
+             authorized: list[Resource] = []
+             for resource in resources:
+@@ -1412,7 +1306,7 @@ class FastMCP(
+                 # Above the chain, so a Prefab payload is re-addressed however
+                 # it was produced — middleware can answer a call itself, and
+                 # such a result never reaches the core path below.
+-                return await self._rebind_prefab_tool_names(dispatched)
++                return dispatched
+ 
+             # Core logic: find and execute tool
+             # Try normal display-name resolution first.
+@@ -1543,17 +1437,6 @@ class FastMCP(
+                 )
+ 
+             # Core logic: find and read resource (providers queried in parallel)
+-            # Intercept synthetic Prefab renderer URIs before normal
+-            # resolution. The resource isn't stored anywhere — we
+-            # build it on demand from the matching tool's CSP.
+-            from fastmcp.server.providers.prefab_synthesis import (
+-                synthesize_prefab_resource_by_uri,
+-            )
+-
+-            synthesized = await synthesize_prefab_resource_by_uri(self, uri)
+-            if synthesized is not None:
+-                return await synthesized._read()
+-
+             # Try concrete resources first (transforms + auth via _get_resource)
+             resource = await self.get_resource(uri, version=version)
+             if resource is not None:
+diff --git a/fastmcp_slim/fastmcp/tools/base.py b/fastmcp_slim/fastmcp/tools/base.py
+index 9e11ad5c..1633042f 100644
+--- a/fastmcp_slim/fastmcp/tools/base.py
++++ b/fastmcp_slim/fastmcp/tools/base.py
+@@ -33,11 +33,6 @@ from pydantic.json_schema import SkipJsonSchema
+ from fastmcp.utilities.authorization import AuthCheck
+ from fastmcp.utilities.components import FastMCPComponent
+ from fastmcp.utilities.logging import get_logger
+-from fastmcp.utilities.prefab import (
+-    is_prefab_app,
+-    is_prefab_component,
+-    prefab_app_from_component,
+-)
+ from fastmcp.utilities.tasks import TaskConfig
+ from fastmcp.utilities.types import (
+     Audio,
+@@ -126,15 +121,6 @@ class ToolResult(BaseModel):
+         converted_content: list[ContentBlock] = _convert_to_content(result=content)
+ 
+         if structured_content is not None:
+-            # Convert Prefab types to their wire-format envelope before
+-            # generic serialization, so the renderer gets the right shape.
+-            if is_prefab_app(structured_content):
+-                structured_content = _prefab_to_json(structured_content)
+-            elif is_prefab_component(structured_content):
+-                structured_content = _prefab_to_json(
+-                    prefab_app_from_component(structured_content)
+-                )
+-
+             try:
+                 structured_content = _serialize_to_jsonable(structured_content)
+             except pydantic_core.PydanticSerializationError as e:
+@@ -376,17 +362,6 @@ class Tool(FastMCPComponent):
+         if isinstance(raw_value, CallToolResult):
+             return ToolResult.from_mcp_result(raw_value)
+ 
+-        if is_prefab_app(raw_value):
+-            return _prefab_to_tool_result(
+-                raw_value,
+-                fastmcp_app_name=_get_fastmcp_app_name(self),
+-            )
+-        if is_prefab_component(raw_value):
+-            return _prefab_to_tool_result(
+-                prefab_app_from_component(raw_value),
+-                fastmcp_app_name=_get_fastmcp_app_name(self),
+-            )
+-
+         content = _convert_to_content(raw_value)
+ 
+         # Bytes can't be represented as structured JSON content
+diff --git a/fastmcp_slim/fastmcp/tools/function_parsing.py b/fastmcp_slim/fastmcp/tools/function_parsing.py
+index d267047f..0518267e 100644
+--- a/fastmcp_slim/fastmcp/tools/function_parsing.py
++++ b/fastmcp_slim/fastmcp/tools/function_parsing.py
+@@ -20,7 +20,6 @@ from fastmcp.tools.base import ToolResult
+ from fastmcp.utilities.docstring_parsing import ParsedDocstring, parse_docstring
+ from fastmcp.utilities.json_schema import compress_schema
+ from fastmcp.utilities.logging import get_logger
+-from fastmcp.utilities.prefab import is_prefab_type
+ from fastmcp.utilities.types import (
+     Audio,
+     File,
+@@ -44,16 +43,6 @@ def _contains_bytes_type(tp: Any) -> bool:
+ _UNCONSTRAINED_SEQUENCE_ORIGINS = (list, tuple, Sequence)
+ 
+ 
+-def _contains_prefab_type(tp: Any) -> bool:
+-    """Check if *tp* is or contains a prefab type, recursing through unions and Annotated."""
+-    if is_prefab_type(tp):
+-        return True
+-    origin = get_origin(tp)
+-    if origin is Union or origin is types.UnionType or origin is Annotated:
+-        return any(_contains_prefab_type(a) for a in get_args(tp))
+-    return False
+-
+-
+ def _is_unconstrained_sequence(tp: Any) -> bool:
+     """A sequence annotation that says nothing about its items.
+ 
+@@ -442,14 +431,6 @@ class ParsedFunction:
+             if _contains_bytes_type(output_type):
+                 output_type = _UnserializableType
+ 
+-            # Prefab component subclasses (Column, Card, etc.) shouldn't
+-            # produce output schemas — replace_type only does exact matching,
+-            # so we handle subclass matching explicitly here.  We also need
+-            # to handle composite types like ``Column | None`` and
+-            # ``Annotated[PrefabApp, ...]`` by recursing into their args.
+-            if _contains_prefab_type(output_type):
+-                output_type = _UnserializableType
+-
+             # ToolResult subclasses should suppress schema generation just
+             # like ToolResult itself — replace_type only does exact matching.
+             if is_class_member_of_type(output_type, ToolResult):

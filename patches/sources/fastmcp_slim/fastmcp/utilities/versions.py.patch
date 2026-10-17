@@ -1,0 +1,80 @@
+diff --git a/fastmcp_slim/fastmcp/utilities/versions.py b/fastmcp_slim/fastmcp/utilities/versions.py
+index fc7c2d91..225d8392 100644
+--- a/fastmcp_slim/fastmcp/utilities/versions.py
++++ b/fastmcp_slim/fastmcp/utilities/versions.py
+@@ -19,8 +19,6 @@ from dataclasses import dataclass
+ from functools import total_ordering
+ from typing import TYPE_CHECKING, Any, TypeVar
+ 
+-from packaging.version import InvalidVersion, Version
+-
+ if TYPE_CHECKING:
+     from fastmcp.utilities.components import FastMCPComponent
+ 
+@@ -130,24 +128,14 @@ class VersionKey:
+     3. Invalid versions (strings) sort lexicographically
+     4. When comparing PEP 440 vs string, PEP 440 comes first
+     """
++    _is_pep440 = False
+ 
+-    __slots__ = ("_is_none", "_is_pep440", "_parsed", "_raw")
++    __slots__ = ("_is_none", "_parsed", "_raw")
+ 
+     def __init__(self, version: str | None) -> None:
+         self._raw = version
+         self._is_none = version is None
+-        self._is_pep440 = False
+-        self._parsed: Version | str | None = None
+-
+-        if version is not None:
+-            # Strip leading 'v' if present (common convention like "v1.0")
+-            normalized = version.lstrip("v") if version.startswith("v") else version
+-            try:
+-                self._parsed = Version(normalized)
+-                self._is_pep440 = True
+-            except InvalidVersion:
+-                # Fall back to string comparison for non-PEP 440 versions
+-                self._parsed = version
++        self._parsed: str | None = version
+ 
+     def __eq__(self, other: object) -> bool:
+         if not isinstance(other, VersionKey):
+@@ -156,13 +144,7 @@ class VersionKey:
+             return True
+         if self._is_none != other._is_none:
+             return False
+-        # Both are not None
+-        if self._is_pep440 and other._is_pep440:
+-            return self._parsed == other._parsed
+-        if not self._is_pep440 and not other._is_pep440:
+-            return self._parsed == other._parsed
+-        # One is PEP 440, other is string - never equal
+-        return False
++        return self._parsed == other._parsed
+ 
+     def __lt__(self, other: object) -> bool:
+         if not isinstance(other, VersionKey):
+@@ -175,20 +157,9 @@ class VersionKey:
+         if other._is_none:
+             return False  # anything > None
+ 
+-        # Both are not None
+-        if self._is_pep440 and other._is_pep440:
+-            # Both PEP 440 - compare normally
+-            assert isinstance(self._parsed, Version)
+-            assert isinstance(other._parsed, Version)
+-            return self._parsed < other._parsed
+-        if not self._is_pep440 and not other._is_pep440:
+-            # Both strings - lexicographic
+-            assert isinstance(self._parsed, str)
+-            assert isinstance(other._parsed, str)
+-            return self._parsed < other._parsed
+-        # Mixed: PEP 440 sorts before strings
+-        # (arbitrary but consistent choice)
+-        return self._is_pep440
++        assert isinstance(self._parsed, str)
++        assert isinstance(other._parsed, str)
++        return self._parsed < other._parsed
+ 
+     def __repr__(self) -> str:
+         return f"VersionKey({self._raw!r})"

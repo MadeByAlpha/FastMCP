@@ -1,0 +1,54 @@
+diff --git a/fastmcp_slim/fastmcp/server/low_level.py b/fastmcp_slim/fastmcp/server/low_level.py
+index 51176be2..447e9611 100644
+--- a/fastmcp_slim/fastmcp/server/low_level.py
++++ b/fastmcp_slim/fastmcp/server/low_level.py
+@@ -29,7 +29,6 @@ from mcp.shared.exceptions import MCPError
+ from pydantic import ValidationError
+ 
+ from fastmcp.apps.config import UI_EXTENSION_ID
+-from fastmcp.server.telemetry import seam_span
+ from fastmcp.utilities.logging import get_logger
+ 
+ if TYPE_CHECKING:
+@@ -185,7 +184,6 @@ class FastMCPServerMiddleware:
+         with (
+             self._apply_shared_context(fastmcp),
+             bind_request_context(ctx),
+-            self._seam_span(fastmcp, ctx),
+         ):
+             if fastmcp is None:
+                 return await call_next(ctx)
+@@ -272,33 +270,6 @@ class FastMCPServerMiddleware:
+                 phase="outer",
+             )
+ 
+-    @contextmanager
+-    def _seam_span(
+-        self, fastmcp: FastMCP | None, ctx: ServerRequestContext
+-    ) -> Iterator[None]:
+-        """Open the per-request SERVER span at the middleware seam.
+-
+-        The removed SDK ``OpenTelemetryMiddleware`` produced one SERVER span per
+-        inbound message. FastMCP re-creates that guarantee for *every* request
+-        method here — the last place shared by all request methods regardless of
+-        how their handler is registered — so a request rejected *before* the
+-        high-level path (FastMCP middleware, auth check, not-found mapping,
+-        params failure) is still traced with an error span.
+-
+-        For the high-level methods (tools/resources/prompts), the deep
+-        ``server_span(...)`` call in ``fastmcp.server.server`` detects this seam
+-        span as the active span and *enriches* it in place with component
+-        attributes instead of opening a second span, so there is exactly one
+-        richly-attributed SERVER span per request. Notifications
+-        (``request_id is None``) are skipped — a SERVER span models an inbound
+-        request/response, not a fire-and-forget notification.
+-        """
+-        if fastmcp is None or ctx.request_id is None:
+-            yield
+-            return
+-        with seam_span(ctx.method, fastmcp.name):
+-            yield
+-
+     @contextmanager
+     def _apply_shared_context(self, fastmcp: FastMCP | None) -> Iterator[None]:
+         """Re-establish app-scoped SharedContext ContextVars for this request.
